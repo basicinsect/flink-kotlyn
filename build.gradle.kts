@@ -21,7 +21,7 @@ dependencies {
     implementation("org.apache.flink:flink-streaming-java:$flinkVersion")
     implementation("org.apache.flink:flink-clients:$flinkVersion")
     implementation("org.apache.flink:flink-runtime:$flinkVersion")
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.18.2")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.18.11")
     runtimeOnly("org.slf4j:slf4j-simple:1.7.36")
 
     testImplementation(kotlin("test"))
