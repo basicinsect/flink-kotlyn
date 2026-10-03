@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flink Kotlyn Lab</title>
+<style>
+  :root { --bg:#0f1420; --panel:#181f30; --panel2:#1f2840; --text:#e6e9f2; --muted:#8c96b0; --accent:#e6526f; --accent2:#4aa8ff; --ok:#3ecf8e; --warn:#f5b942; --bad:#ff5c5c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 24px; background:var(--panel); border-bottom:1px solid #2a3552; display:flex; gap:12px; align-items:baseline; }
+  header h1 { margin:0; font-size:20px; } header span { color:var(--muted); }
+  main { display:grid; grid-template-columns:420px 1fr; gap:16px; padding:16px 24px; }
+  @media (max-width:1000px){ main{grid-template-columns:1fr;} }
+  section { background:var(--panel); border-radius:8px; padding:16px; margin-bottom:16px; }
+  h2 { margin:0 0 10px; font-size:15px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  label { display:block; margin:10px 0 4px; color:var(--muted); font-size:12px; }
+  select, input, textarea { width:100%; background:var(--panel2); color:var(--text); border:1px solid #2f3a5a; border-radius:6px; padding:7px 9px; font:inherit; }
+  textarea { font-family:ui-monospace,monospace; font-size:12.5px; min-height:150px; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:9px 16px; font:inherit; font-weight:600; cursor:pointer; margin-top:14px; }
+  button:hover { filter:brightness(1.1); }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .desc { color:var(--muted); margin:8px 0 0; }
+  .tags span { display:inline-block; background:var(--panel2); color:var(--accent2); border-radius:10px; padding:1px 9px; margin:6px 6px 0 0; font-size:12px; }
+  table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #2a3552; }
+  th { color:var(--muted); font-weight:500; font-size:12px; } tr.job { cursor:pointer; } tr.job:hover, tr.sel { background:var(--panel2); }
+  .st { font-weight:600; } .FINISHED{color:var(--ok)} .FAILED,.CANCELED{color:var(--bad)} .RUNNING,.CREATED,.BUILDING,.QUEUED,.INITIALIZING{color:var(--warn)}
+  .tabs { display:flex; gap:4px; margin-bottom:10px; } .tabs button { margin:0; background:var(--panel2); color:var(--muted); padding:6px 12px; }
+  .tabs button.on { background:var(--accent2); color:#fff; }
+  pre { background:#0b101b; padding:10px; border-radius:6px; overflow:auto; max-height:420px; margin:0; font-size:12.5px; }
+  .dag { display:flex; flex-direction:column; align-items:stretch; gap:0; }
+  .node { background:var(--panel2); border:1px solid #34406a; border-left:4px solid var(--accent2); border-radius:6px; padding:8px 12px; }
+  .node b { color:var(--text); } .node small { color:var(--muted); }
+  .edge { text-align:center; color:var(--accent); font-size:12px; padding:3px; }
+  .err { color:var(--bad); margin-top:8px; }
+  .ev { color:var(--muted); } .ev b { color:var(--accent2); font-weight:normal; }
+</style>
+</head>
+<body>
+<header><h1>Flink Kotlyn Lab</h1><span>Submit Apache Flink jobs written in Kotlin and watch how they execute.</span></header>
+<main>
+  <div>
+    <section>
+      <h2>New task</h2>
+      <label for="scenario">Scenario</label>
+      <select id="scenario"></select>
+      <p class="desc" id="summary"></p>
+      <div class="tags" id="concepts"></div>
+      <div class="row">
+        <div><label for="parallelism">Parallelism (1-8)</label><input id="parallelism" type="number" min="1" max="8"></div>
+        <div><label for="mode">Runtime mode</label>
+          <select id="mode"><option value="STREAMING">STREAMING</option><option value="BATCH">BATCH</option></select></div>
+      </div>
+      <div id="wmBox"><label for="wm">Watermark out-of-orderness (seconds)</label><input id="wm" type="number" min="0" max="3600"></div>
+      <label for="input" id="inputLabel">Input</label>
+      <textarea id="input" spellcheck="false"></textarea>
+      <button id="submit">Submit job</button>
+      <div class="err" id="formErr"></div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Jobs</h2>
+      <table><thead><tr><th>#</th><th>Scenario</th><th>Mode</th><th>Par.</th><th>Status</th><th>Results</th><th>Time</th></tr></thead>
+      <tbody id="jobs"><tr><td colspan="7" class="ev">No jobs yet — submit one!</td></tr></tbody></table>
+    </section>
+    <section id="detail" hidden>
+      <h2 id="detailTitle">Job</h2>
+      <div class="tabs"><button data-tab="results" class="on">Results</button><button data-tab="plan">Execution plan</button><button data-tab="events">Timeline</button><button data-tab="input">Input</button></div>
+      <div id="tab"></div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let scenarios = [], selected = null, tab = 'results', detail = null;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const api = async (url, opts) => { const r = await fetch(url, opts); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; };
+
+function applyScenario() {
+  const s = scenarios.find(x => x.id === $('scenario').value);
+  $('summary').textContent = s.summary;
+  $('concepts').innerHTML = s.concepts.map(c => `<span>${esc(c)}</span>`).join('');
+  $('parallelism').value = s.defaultParallelism;
+  $('input').value = s.defaultInput;
+  $('inputLabel').textContent = 'Input — ' + s.inputHint;
+  $('wmBox').hidden = !s.eventTime;
+  $('wm').value = s.id === 'late-data' ? 0 : 3;
+}
+
+async function submit() {
+  $('formErr').textContent = '';
+  try {
+    const job = await api('/api/jobs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+      scenario: $('scenario').value, input: $('input').value, parallelism: +$('parallelism').value,
+      mode: $('mode').value, watermarkDelaySec: +$('wm').value }) });
+    selected = job.id; await refresh();
+  } catch (e) { $('formErr').textContent = e.message; }
+}
+
+function renderPlan(plan) {
+  if (!plan || !plan.nodes) return '<span class="ev">No plan available.</span>';
+  const byId = {}; plan.nodes.forEach(n => byId[n.id] = n);
+  return '<div class="dag">' + plan.nodes.map(n => {
+    const edges = (n.predecessors || []).map(p => `<div class="edge">▼ ${esc(p.ship_strategy)} ${p.side ? '(' + esc(p.side) + ')' : ''} from #${p.id}</div>`).join('');
+    return edges + `<div class="node"><b>${esc(n.type)}</b> <small>#${n.id} · parallelism ${n.parallelism}</small><br><small>${esc(n.contents)}</small></div>`;
+  }).join('') + '</div>';
+}
+
+function renderTab() {
+  if (!detail) return;
+  const d = detail; let html = '';
+  if (tab === 'results') {
+    html = `<p class="ev">${d.resultCount} record(s)${d.resultCount > d.results.length ? ' (first ' + d.results.length + ' shown)' : ''}. Order across parallel subtasks is not guaranteed.</p>`
+      + `<pre>${d.results.map(esc).join('\n') || '(none yet)'}</pre>`;
+  } else if (tab === 'plan') {
+    html = renderPlan(d.plan);
+  } else if (tab === 'events') {
+    html = '<pre>' + d.events.map(e => `<span class="ev">${esc(e.time.substring(11, 23))}</span> ${esc(e.message)}`).join('\n') + '</pre>';
+  } else html = `<p class="ev">watermark delay: ${d.watermarkDelaySec}s</p><pre>${esc(d.input)}</pre>`;
+  if (d.error) html += `<div class="err">${esc(d.error)}</div>`;
+  $('tab').innerHTML = html;
+}
+
+async function refresh() {
+  const jobs = await api('/api/jobs');
+  $('jobs').innerHTML = jobs.length ? jobs.map(j => `<tr class="job ${j.id === selected ? 'sel' : ''}" data-id="${j.id}">
+    <td>${j.id}</td><td>${esc(j.title)}</td><td>${j.mode}</td><td>${j.parallelism}</td>
+    <td class="st ${j.status}">${j.status}</td><td>${j.resultCount}</td><td>${j.durationMs ?? ''}${j.durationMs != null ? ' ms' : ''}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="ev">No jobs yet — submit one!</td></tr>';
+  if (selected != null) {
+    detail = await api('/api/jobs/' + selected);
+    $('detail').hidden = false;
+    $('detailTitle').textContent = `Job #${detail.id} — ${detail.title}` + (detail.flinkJobId ? ` (${detail.flinkJobId})` : '');
+    renderTab();
+  }
+}
+
+document.addEventListener('click', e => {
+  const tr = e.target.closest('tr.job'); if (tr) { selected = +tr.dataset.id; refresh(); }
+  const b = e.target.closest('.tabs button'); if (b) {
+    tab = b.dataset.tab; document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b)); renderTab();
+  }
+});
+$('submit').onclick = submit;
+$('scenario').onchange = applyScenario;
+(async () => {
+  scenarios = await api('/api/scenarios');
+  $('scenario').innerHTML = scenarios.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('');
+  applyScenario(); await refresh(); setInterval(() => refresh().catch(() => {}), 1000);
+})();
+</script>
+</body>
+</html>
